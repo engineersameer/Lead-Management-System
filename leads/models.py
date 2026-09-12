@@ -118,8 +118,9 @@ class Phase(models.Model):
             engineer=engineer,
             assigned_by=manager,
         )
-
-
+        
+        
+        
 class PhaseAssignment(models.Model):
 
     class Status(models.TextChoices):
@@ -154,6 +155,24 @@ class PhaseAssignment(models.Model):
         blank=True,
     )
 
+    # NEW: Allows assignment history, but only one PENDING or ACCEPTED
+    # manager assignment can exist for a phase at a time.
+    # If one manager assignment is REJECTED, another manager can be assigned to the same phase
+    # Can't request another manager assignment if one is already PENDING or ACCEPTED for the same phase.
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["phase"],
+                condition=models.Q(
+                    status__in=[
+                        "PENDING",
+                        "ACCEPTED",
+                    ]
+                ),
+                name="unique_active_phase_manager",
+            ),
+        ]
+
     def __str__(self):
         return f"{self.phase} - {self.manager.username}"
 
@@ -181,6 +200,8 @@ class PhaseAssignment(models.Model):
     # If Manager has accepted the assignment, this method will return True, otherwise False.
     def is_accepted(self):
         return self.status == self.Status.ACCEPTED
+
+
 
 
 class PhaseEngineer(models.Model):
