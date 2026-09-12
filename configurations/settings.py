@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     "projects",
     "comments",
     "commissions",
+    "payments",
 ]
 AUTH_USER_MODEL = "users.User"
 
