@@ -3,7 +3,9 @@ from django.db import models
 
 
 class User(AbstractUser):
-# Making Resuable method inside the User for Checking Role 
+    email = models.EmailField(unique=True)
+    
+    # Making Resuable method inside the User for Checking Role 
     def has_role(self, role_name):    
         return self.user_roles.filter(
             role__name=role_name
