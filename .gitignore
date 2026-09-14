@@ -6,9 +6,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Django
-db.sqlite3
-
 # Environment variables
 .env
 
