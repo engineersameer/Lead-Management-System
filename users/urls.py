@@ -9,6 +9,10 @@ from .views import (
     RefreshTokenView,
     RegisterView,
     ResetPasswordView,
+    RoleListCreateView,
+    RoleDetailView,
+    UserRoleListCreateView,
+    UserRoleDetailView,
 )
 
 urlpatterns = [
@@ -31,5 +35,25 @@ urlpatterns = [
         "reset-password/",
         ResetPasswordView.as_view(),
         name="reset_password",
+    ),
+    path(
+        "roles/",
+        RoleListCreateView.as_view(),
+        name="role-list-create",
+    ),
+    path(
+        "roles/<int:pk>/",
+        RoleDetailView.as_view(),
+        name="role-detail",
+    ),
+    path(
+        "user-roles/",
+        UserRoleListCreateView.as_view(),
+        name="user-role-list-create",
+    ),
+    path(
+        "user-roles/<int:pk>/",
+        UserRoleDetailView.as_view(),
+        name="user-role-detail",
     ),
 ]

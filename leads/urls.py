@@ -1,6 +1,17 @@
 from django.urls import path
 
-from .views import LeadDetailView, LeadListCreateView, PhaseDetailView, PhaseListCreateView
+from .views import (
+    LeadDetailView,
+    LeadListCreateView,
+    PhaseAssignmentAcceptView,
+    PhaseAssignmentDetailView,
+    PhaseAssignmentListCreateView,
+    PhaseAssignmentRejectView,
+    PhaseDetailView,
+    PhaseEngineerDetailView,
+    PhaseEngineerListCreateView,
+    PhaseListCreateView,
+)
 
 urlpatterns = [
     path("", LeadListCreateView.as_view(), name="lead-list-create"),
@@ -15,19 +26,34 @@ urlpatterns = [
         PhaseDetailView.as_view(),
         name="phase-detail",
     ),
+    path(
+        "phase-assignments/",
+        PhaseAssignmentListCreateView.as_view(),
+        name="phase-assignment-list-create",
+    ),
+    path(
+        "phase-assignments/<int:pk>/",
+        PhaseAssignmentDetailView.as_view(),
+        name="phase-assignment-detail",
+    ),
+    path(
+        "phase-assignments/<int:pk>/accept/",
+        PhaseAssignmentAcceptView.as_view(),
+        name="phase-assignment-accept",
+    ),
+    path(
+        "phase-assignments/<int:pk>/reject/",
+        PhaseAssignmentRejectView.as_view(),
+        name="phase-assignment-reject",
+    ),
+    path(
+        "phase-engineers/",
+        PhaseEngineerListCreateView.as_view(),
+        name="phase-engineer-list-create",
+    ),
+    path(
+        "phase-engineers/<int:pk>/",
+        PhaseEngineerDetailView.as_view(),
+        name="phase-engineer-detail",
+    ),
 ]
-
-"""
-Lead list create view:
-GET  /api/leads/   → list all leads
-POST /api/leads/   → create a lead
-
-
-
-RetrieveUpdateDestroyAPIView
-GET    /api/leads/1/   → retrieve lead
-PUT    /api/leads/1/   → full update
-PATCH  /api/leads/1/   → partial update
-DELETE /api/leads/1/   → delete
-
-"""

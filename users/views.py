@@ -1,11 +1,11 @@
-from django.contrib.auth import authenticate
 from rest_framework import generics, mixins, status
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import User
+from .models import Role, User, UserRole
+from .permissions import IsSuperAdmin
 from .serializers import (
     ChangePasswordSerializer,
     ForgotPasswordSerializer,
@@ -13,13 +13,15 @@ from .serializers import (
     LogoutSerializer,
     RegisterSerializer,
     ResetPasswordSerializer,
+    RoleSerializer,
+    UserRoleSerializer,
     UserSerializer,
 )
 
 
 class RegisterView(mixins.CreateModelMixin, generics.GenericAPIView):
-    
-    # This Class doesn't needed to be authenticated, because it's the Signup view, so we set the permission_classes to AllowAny. 
+
+    # Signup does not require authentication.
     permission_classes = [AllowAny]
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
@@ -29,7 +31,7 @@ class RegisterView(mixins.CreateModelMixin, generics.GenericAPIView):
 
 
 class LoginView(generics.GenericAPIView):
-    # This Class doesn't needed to be authenticated, because it's the login view, so we set the permission_classes to AllowAny. 
+    # Login does not require authentication.
     permission_classes = [AllowAny]
     serializer_class = LoginSerializer
 
@@ -51,6 +53,7 @@ class LoginView(generics.GenericAPIView):
 
 
 class RefreshTokenView(generics.GenericAPIView):
+    permission_classes = [AllowAny]
     serializer_class = TokenRefreshSerializer
 
     def post(self, request, *args, **kwargs):
@@ -65,7 +68,6 @@ class RefreshTokenView(generics.GenericAPIView):
 
 class LogoutView(generics.GenericAPIView):
     serializer_class = LogoutSerializer
-    permission_classes = [IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -79,7 +81,6 @@ class LogoutView(generics.GenericAPIView):
 
 class MeView(mixins.RetrieveModelMixin, generics.GenericAPIView):
     serializer_class = UserSerializer
-    permission_classes = [IsAuthenticated]
 
     def get_object(self):
         return self.request.user
@@ -90,8 +91,8 @@ class MeView(mixins.RetrieveModelMixin, generics.GenericAPIView):
 
 class ChangePasswordView(generics.GenericAPIView):
     serializer_class = ChangePasswordSerializer
-    
-    # permission_classes = [IsAuthenticated] moving to the setting.py 
+
+    # Uses IsAuthenticated from the global DRF settings.
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -108,7 +109,7 @@ class ChangePasswordView(generics.GenericAPIView):
 
 
 class ForgotPasswordView(generics.GenericAPIView):
-    # As it does not require to have authentication, we set the permission_classes to AllowAny.
+    # Password reset request does not require authentication.
     permission_classes = [AllowAny]
     serializer_class = ForgotPasswordSerializer
 
@@ -129,16 +130,44 @@ class ForgotPasswordView(generics.GenericAPIView):
 
 
 class ResetPasswordView(generics.GenericAPIView):
-    # As it does not require to have authentication, we set the permission_classes to AllowAny.
+    # Password reset does not require authentication.
     permission_classes = [AllowAny]
     serializer_class = ResetPasswordSerializer
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
         serializer.save()
 
         return Response(
             {"detail": "Password reset successfully."},
             status=status.HTTP_200_OK,
         )
+
+
+class RoleListCreateView(generics.ListCreateAPIView):
+    queryset = Role.objects.all()
+    serializer_class = RoleSerializer
+    permission_classes = [IsSuperAdmin]
+
+
+class RoleDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Role.objects.all()
+    serializer_class = RoleSerializer
+    permission_classes = [IsSuperAdmin]
+
+
+class UserRoleListCreateView(generics.ListCreateAPIView):
+    queryset = UserRole.objects.all()
+    serializer_class = UserRoleSerializer
+    permission_classes = [IsSuperAdmin]
+
+    def perform_create(self, serializer):
+        serializer.save(assigned_by=self.request.user)
+
+
+class UserRoleDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = UserRole.objects.all()
+    serializer_class = UserRoleSerializer
+    permission_classes = [IsSuperAdmin]

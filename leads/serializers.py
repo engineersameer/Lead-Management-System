@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Lead, Phase
+from .models import Lead, Phase, PhaseAssignment, PhaseEngineer
 
 
 class LeadSerializer(serializers.ModelSerializer):
@@ -50,4 +50,44 @@ class PhaseSerializer(serializers.ModelSerializer):
             "status",
             "completed_at",
             "created_at",
+        ]
+
+
+class PhaseAssignmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PhaseAssignment
+        fields = [
+            "id",
+            "phase",
+            "manager",
+            "status",
+            "rejection_comment",
+            "assigned_at",
+            "responded_at",
+        ]
+        read_only_fields = [
+            "id",
+            "status",
+            "rejection_comment",
+            "assigned_at",
+            "responded_at",
+        ]
+
+
+class PhaseEngineerSerializer(serializers.ModelSerializer):
+    assigned_by = serializers.ReadOnlyField(source="assigned_by.username")
+
+    class Meta:
+        model = PhaseEngineer
+        fields = [
+            "id",
+            "phase",
+            "engineer",
+            "assigned_by",
+            "assigned_at",
+        ]
+        read_only_fields = [
+            "id",
+            "assigned_by",
+            "assigned_at",
         ]
