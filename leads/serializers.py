@@ -127,3 +127,22 @@ class PhaseEngineerSerializer(serializers.ModelSerializer):
             "assigned_by",
             "assigned_at",
         ]
+
+    def validate(self, attrs):
+        phase = attrs["phase"]
+        engineer = attrs["engineer"]
+
+        if not engineer.has_role("Engineer"):
+            raise serializers.ValidationError(
+                {"engineer": ("The selected user must have the Engineer role.")}
+            )
+
+        if PhaseEngineer.objects.filter(
+            phase=phase,
+            engineer=engineer,
+        ).exists():
+            raise serializers.ValidationError(
+                {"engineer": ("This engineer is already assigned to this phase.")}
+            )
+
+        return attrs
