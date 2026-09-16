@@ -40,12 +40,12 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "users",
     "leads",
     "projects",
     "comments",
     "commissions",
     "payments",
-    "users.apps.UsersConfig",
 ]
 
 AUTH_USER_MODEL = "users.User"
@@ -158,3 +158,21 @@ SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
 }
+
+
+STORAGES = {
+    "default": {
+        "BACKEND": "storages.backends.s3.S3Storage",
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}
+
+AWS_ACCESS_KEY_ID = os.getenv("MINIO_ROOT_USER")
+AWS_SECRET_ACCESS_KEY = os.getenv("MINIO_ROOT_PASSWORD")
+AWS_STORAGE_BUCKET_NAME = os.getenv("MINIO_BUCKET_NAME")
+AWS_S3_ENDPOINT_URL = os.getenv("MINIO_ENDPOINT_URL")
+AWS_S3_REGION_NAME = "us-east-1"
+AWS_S3_ADDRESSING_STYLE = "path"
+AWS_QUERYSTRING_AUTH = True
