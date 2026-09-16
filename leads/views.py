@@ -1,5 +1,5 @@
 from django.utils import timezone
-
+from django.core.exceptions import ValidationError
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -93,7 +93,13 @@ class PhaseAssignmentAcceptView(APIView):
             pk=pk,
         )
 
-        assignment.accept()
+        try:
+            assignment.accept()
+        except ValidationError as exc:
+            return Response(
+                {"detail": exc.message},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response(
             PhaseAssignmentSerializer(assignment).data,
@@ -112,13 +118,13 @@ class PhaseAssignmentRejectView(APIView):
 
         comment = request.data.get("comment")
 
-        if not comment:
+        try:
+            assignment.reject(comment)
+        except ValidationError as exc:
             return Response(
-                {"comment": "This field is required."},
+                {"detail": exc.message},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
-        assignment.reject(comment)
 
         return Response(
             PhaseAssignmentSerializer(assignment).data,
@@ -131,8 +137,31 @@ class PhaseEngineerListCreateView(generics.ListCreateAPIView):
     serializer_class = PhaseEngineerSerializer
     permission_classes = [IsSuperAdmin | IsTechnicalManager]
 
-    def perform_create(self, serializer):
-        serializer.save(assigned_by=self.request.user)
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        phase = serializer.validated_data["phase"]
+        engineer = serializer.validated_data["engineer"]
+
+        try:
+            phase_engineer = phase.assign_engineer(
+                engineer=engineer,
+                manager=request.user,
+            )
+
+        except (ValueError, ValidationError) as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        response_serializer = self.get_serializer(phase_engineer)
+
+        return Response(
+            response_serializer.data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class PhaseEngineerDetailView(generics.RetrieveUpdateDestroyAPIView):
