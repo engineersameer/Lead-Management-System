@@ -54,6 +54,7 @@ class PhaseSerializer(serializers.ModelSerializer):
 
 
 class PhaseAssignmentSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = PhaseAssignment
         fields = [
@@ -72,6 +73,41 @@ class PhaseAssignmentSerializer(serializers.ModelSerializer):
             "assigned_at",
             "responded_at",
         ]
+
+    def validate(self, attrs):
+        phase = attrs["phase"]
+        manager = attrs["manager"]
+
+        # The selected user must have the Technical Manager role.
+        if not manager.has_role("Technical Manager"):
+            raise serializers.ValidationError(
+                {
+                    "manager": (
+                        "The selected user must have the " "Technical Manager role."
+                    )
+                }
+            )
+
+        # A phase can have only one active assignment.
+        active_assignment_exists = PhaseAssignment.objects.filter(
+            phase=phase,
+            status__in=[
+                PhaseAssignment.Status.PENDING,
+                PhaseAssignment.Status.ACCEPTED,
+            ],
+        ).exists()
+
+        if active_assignment_exists:
+            raise serializers.ValidationError(
+                {
+                    "phase": (
+                        "This phase already has a pending or accepted "
+                        "manager assignment."
+                    )
+                }
+            )
+
+        return attrs
 
 
 class PhaseEngineerSerializer(serializers.ModelSerializer):

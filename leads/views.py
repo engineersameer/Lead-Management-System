@@ -49,25 +49,38 @@ class LeadDetailView(generics.RetrieveUpdateDestroyAPIView):
 class PhaseListCreateView(generics.ListCreateAPIView):
     queryset = Phase.objects.all()
     serializer_class = PhaseSerializer
-    permission_classes = [IsSuperAdmin | IsTechnicalManager]
+    permission_classes = [IsSuperAdmin | IsBusinessDeveloper]
 
 
 class PhaseDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Phase.objects.all()
     serializer_class = PhaseSerializer
-    permission_classes = [IsSuperAdmin | IsTechnicalManager]
+    permission_classes = [IsSuperAdmin | IsBusinessDeveloper]
 
 
 class PhaseAssignmentListCreateView(generics.ListCreateAPIView):
-    queryset = PhaseAssignment.objects.all()
     serializer_class = PhaseAssignmentSerializer
-    permission_classes = [IsSuperAdmin | IsTechnicalManager]
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [(IsSuperAdmin | IsBusinessDeveloper | IsTechnicalManager)()]
+
+        return [(IsSuperAdmin | IsBusinessDeveloper)()]
+
+    def get_queryset(self):
+        if self.request.user.is_superuser:
+            return PhaseAssignment.objects.all()
+
+        if self.request.user.has_role("Technical Manager"):
+            return PhaseAssignment.objects.filter(manager=self.request.user)
+
+        return PhaseAssignment.objects.all()
 
 
 class PhaseAssignmentDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = PhaseAssignment.objects.all()
     serializer_class = PhaseAssignmentSerializer
-    permission_classes = [IsSuperAdmin | IsTechnicalManager]
+    permission_classes = [IsSuperAdmin | IsBusinessDeveloper]
 
 
 # Accept and Reject are custom business actions, not standard CRUD operations.
