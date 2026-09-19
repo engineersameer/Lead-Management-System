@@ -4,11 +4,12 @@ venv/
 # Python
 __pycache__/
 *.py[cod]
+temp_auto_push.bat
 *$py.class
 
 # Environment variables
 .env
 
 # IDE
-.vscode/
-.idea/
+.idea/.gitignore
+branch_structure.json
