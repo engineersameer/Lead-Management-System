@@ -1,11 +1,13 @@
 from django.utils import timezone
 from django.core.exceptions import ValidationError
+
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from users.permissions import (
     IsBusinessDeveloper,
+    IsEngineer,
     IsSuperAdmin,
     IsTechnicalManager,
 )
@@ -58,6 +60,29 @@ class PhaseDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsSuperAdmin | IsBusinessDeveloper]
 
 
+class PhaseCompleteView(APIView):
+    permission_classes = [IsSuperAdmin | IsEngineer]
+
+    def post(self, request, pk):
+        phase = generics.get_object_or_404(
+            Phase,
+            pk=pk,
+        )
+
+        try:
+            phase.complete(request.user)
+        except ValidationError as exc:
+            return Response(
+                {"detail": str(exc.message)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            PhaseSerializer(phase).data,
+            status=status.HTTP_200_OK,
+        )
+
+
 class PhaseAssignmentListCreateView(generics.ListCreateAPIView):
     serializer_class = PhaseAssignmentSerializer
 
@@ -83,7 +108,6 @@ class PhaseAssignmentDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsSuperAdmin | IsBusinessDeveloper]
 
 
-# Accept and Reject are custom business actions, not standard CRUD operations.
 class PhaseAssignmentAcceptView(APIView):
     permission_classes = [IsSuperAdmin | IsTechnicalManager]
 
@@ -94,10 +118,10 @@ class PhaseAssignmentAcceptView(APIView):
         )
 
         try:
-            assignment.accept()
+            assignment.accept(request.user)
         except ValidationError as exc:
             return Response(
-                {"detail": exc.message},
+                {"detail": str(exc.message)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -119,10 +143,10 @@ class PhaseAssignmentRejectView(APIView):
         comment = request.data.get("comment")
 
         try:
-            assignment.reject(comment)
+            assignment.reject(comment, request.user)
         except ValidationError as exc:
             return Response(
-                {"detail": exc.message},
+                {"detail": str(exc.message)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -149,7 +173,6 @@ class PhaseEngineerListCreateView(generics.ListCreateAPIView):
                 engineer=engineer,
                 manager=request.user,
             )
-
         except (ValueError, ValidationError) as exc:
             return Response(
                 {"detail": str(exc)},
@@ -168,3 +191,26 @@ class PhaseEngineerDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = PhaseEngineer.objects.all()
     serializer_class = PhaseEngineerSerializer
     permission_classes = [IsSuperAdmin | IsTechnicalManager]
+
+
+class PhaseCompleteView(APIView):
+    permission_classes = [IsSuperAdmin | IsTechnicalManager]
+
+    def post(self, request, pk):
+        phase = generics.get_object_or_404(
+            Phase,
+            pk=pk,
+        )
+
+        try:
+            phase.complete(request.user)
+        except ValidationError as exc:
+            return Response(
+                {"detail": str(exc.message)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            PhaseSerializer(phase).data,
+            status=status.HTTP_200_OK,
+        )

@@ -7,6 +7,7 @@ from .views import (
     PhaseAssignmentDetailView,
     PhaseAssignmentListCreateView,
     PhaseAssignmentRejectView,
+    PhaseCompleteView,
     PhaseDetailView,
     PhaseEngineerDetailView,
     PhaseEngineerListCreateView,
@@ -55,5 +56,10 @@ urlpatterns = [
         "phase-engineers/<int:pk>/",
         PhaseEngineerDetailView.as_view(),
         name="phase-engineer-detail",
+    ),
+    path(
+        "phases/<int:pk>/complete/",
+        PhaseCompleteView.as_view(),
+        name="phase-complete",
     ),
 ]
