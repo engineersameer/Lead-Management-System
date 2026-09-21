@@ -1,73 +1,86 @@
 from django.contrib import admin
+from django.db.models.deletion import ProtectedError
 
 from .models import Commission, CommissionRate
 
 
 @admin.register(CommissionRate)
 class CommissionRateAdmin(admin.ModelAdmin):
-    list_display = [
+    list_display = (
         "role",
         "percentage",
         "effective_from",
-        "effective_to",
         "created_by",
         "created_at",
-    ]
+    )
 
-    list_filter = [
+    list_filter = (
         "role",
         "effective_from",
-        "effective_to",
-    ]
+    )
 
-    search_fields = [
+    search_fields = (
+        "role__name",
         "created_by__username",
-    ]
+        "created_by__email",
+    )
 
-    readonly_fields = [
+    readonly_fields = (
         "created_by",
         "created_at",
-    ]
+    )
 
     def save_model(self, request, obj, form, change):
-        if not change:
+        if not obj.created_by_id:
             obj.created_by = request.user
 
-        super().save_model(
-            request,
-            obj,
-            form,
-            change,
-        )
+        super().save_model(request, obj, form, change)
+
+    def delete_model(self, request, obj):
+        try:
+            super().delete_model(request, obj)
+        except ProtectedError:
+            self.message_user(
+                request,
+                "This commission rate cannot be deleted because it is being used by a commission.",
+                level="error",
+            )
 
 
 @admin.register(Commission)
 class CommissionAdmin(admin.ModelAdmin):
-    list_display = [
+    list_display = (
         "payment",
         "recipient",
-        "recipient_role",
         "commission_rate",
         "amount",
         "created_at",
-    ]
+    )
 
-    list_filter = [
-        "recipient_role",
+    list_filter = (
         "commission_rate__role",
-        "payment__status",
-    ]
+        "created_at",
+    )
 
-    search_fields = [
+    search_fields = (
         "recipient__username",
-        "payment__project__title",
-    ]
+        "recipient__email",
+        "commission_rate__role__name",
+    )
 
-    readonly_fields = [
+    readonly_fields = (
         "payment",
-        "commission_rate",
         "recipient",
-        "recipient_role",
+        "commission_rate",
         "amount",
         "created_at",
-    ]
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
