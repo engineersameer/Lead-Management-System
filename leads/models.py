@@ -1,6 +1,6 @@
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 
@@ -51,6 +51,9 @@ class Lead(models.Model):
         return self.project_name
 
     def change_status(self, status):
+        if status not in self.Status.values:
+            raise ValidationError("Invalid lead status.")
+
         self.status = status
         self.save(update_fields=["status"])
 
@@ -98,31 +101,90 @@ class Phase(models.Model):
     def __str__(self):
         return f"{self.lead.project_name} - Phase {self.sequence}"
 
-    def complete(self):
-        self.status = self.Status.COMPLETED
-        self.completed_at = timezone.now()
-        self.save(update_fields=["status", "completed_at"])
+    def complete(self, user):
+        # A completed phase cannot be completed again.
+        if self.status == self.Status.COMPLETED:
+            raise ValidationError(
+                "This phase has already been completed."
+            )
 
-    def assign_engineer(self, engineer, manager):
-        # The selected user must be an Engineer.
-        if not engineer.has_role("Engineer"):
-            raise ValidationError("The selected user must have the Engineer role.")
+        # A phase must be in progress before it can be completed.
+        if self.status != self.Status.IN_PROGRESS:
+            raise ValidationError(
+                "A phase must be in progress before it can be completed."
+            )
 
-        # Find the manager assignment that was accepted for this phase.
+        # There must be an accepted manager assignment.
         accepted_assignment = self.assignments.filter(
             status=PhaseAssignment.Status.ACCEPTED,
         ).first()
 
         if not accepted_assignment:
             raise ValidationError(
-                "The phase must be accepted by a manager before assigning an engineer."
+                "The phase must have an accepted manager assignment "
+                "before it can be completed."
             )
 
-        # A Technical Manager can assign engineers only to phases
-        # that they personally accepted.
-        if not manager.is_superuser and accepted_assignment.manager != manager:
+        # Only the manager who accepted the phase can complete it.
+        if (
+            not user.is_superuser
+            and accepted_assignment.manager_id != user.id
+        ):
             raise ValidationError(
-                "Only the manager who accepted the phase can assign an engineer."
+                "Only the manager who accepted the phase can complete it."
+            )
+
+        self.status = self.Status.COMPLETED
+        self.completed_at = timezone.now()
+
+        self.save(
+            update_fields=[
+                "status",
+                "completed_at",
+            ]
+        )
+
+    def assign_engineer(self, engineer, manager):
+        # A completed phase cannot receive a new engineer.
+        if self.status == self.Status.COMPLETED:
+            raise ValidationError(
+                "A completed phase cannot be assigned to an engineer."
+            )
+
+        # The selected user must have the Engineer role.
+        if not engineer.has_role("Engineer"):
+            raise ValidationError(
+                "The selected user must have the Engineer role."
+            )
+
+        # Engineer assignment is only possible after manager acceptance.
+        accepted_assignment = self.assignments.filter(
+            status=PhaseAssignment.Status.ACCEPTED,
+        ).first()
+
+        if not accepted_assignment:
+            raise ValidationError(
+                "The phase must be accepted by a manager "
+                "before assigning an engineer."
+            )
+
+        # A Technical Manager can assign engineers only to a phase
+        # that they personally accepted.
+        if (
+            not manager.is_superuser
+            and accepted_assignment.manager_id != manager.id
+        ):
+            raise ValidationError(
+                "Only the manager who accepted the phase "
+                "can assign an engineer."
+            )
+
+        # Prevent duplicate phase-engineer assignments.
+        if self.engineers.filter(
+            engineer=engineer,
+        ).exists():
+            raise ValidationError(
+                "This engineer is already assigned to this phase."
             )
 
         return PhaseEngineer.objects.create(
@@ -183,35 +245,65 @@ class PhaseAssignment(models.Model):
     def __str__(self):
         return f"{self.phase} - {self.manager.username}"
 
-    def accept(self):
+    def accept(self, user):
+        # The assignment can only be accepted while pending.
         if self.status != self.Status.PENDING:
             raise ValidationError(
                 "You cannot change the decision after the assignment "
                 "has been accepted or rejected."
             )
 
-        self.status = self.Status.ACCEPTED
-        self.responded_at = timezone.now()
+        # Only the assigned manager can accept the assignment.
+        if (
+            not user.is_superuser
+            and self.manager_id != user.id
+        ):
+            raise ValidationError(
+                "Only the manager assigned to this phase can accept it."
+            )
 
-        self.save(
-            update_fields=[
-                "status",
-                "responded_at",
-            ]
-        )
+        with transaction.atomic():
+            self.status = self.Status.ACCEPTED
+            self.responded_at = timezone.now()
 
-    def reject(self, comment):
+            self.save(
+                update_fields=[
+                    "status",
+                    "responded_at",
+                ]
+            )
+
+            # Accepting the phase automatically starts it.
+            if self.phase.status == Phase.Status.PENDING:
+                self.phase.status = Phase.Status.IN_PROGRESS
+                self.phase.save(
+                    update_fields=["status"]
+                )
+
+    def reject(self, comment, user):
+        # The assignment can only be rejected while pending.
         if self.status != self.Status.PENDING:
             raise ValidationError(
                 "You cannot change the decision after the assignment "
                 "has been accepted or rejected."
             )
 
-        if not comment:
-            raise ValidationError("Rejection comment is required.")
+        # Only the assigned manager can reject the assignment.
+        if (
+            not user.is_superuser
+            and self.manager_id != user.id
+        ):
+            raise ValidationError(
+                "Only the manager assigned to this phase can reject it."
+            )
+
+        if not comment or not comment.strip():
+            raise ValidationError(
+                "Rejection comment is required."
+            )
 
         self.status = self.Status.REJECTED
-        self.rejection_comment = comment
+        self.rejection_comment = comment.strip()
         self.responded_at = timezone.now()
 
         self.save(
@@ -260,3 +352,4 @@ class PhaseEngineer(models.Model):
 
     def __str__(self):
         return f"{self.phase} - {self.engineer.username}"
+
