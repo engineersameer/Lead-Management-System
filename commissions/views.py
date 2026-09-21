@@ -1,6 +1,5 @@
-from decimal import Decimal, ROUND_HALF_UP
+from django.db import IntegrityError, transaction
 from django.db.models import ProtectedError
-from django.core.exceptions import ValidationError
 
 from rest_framework import generics, serializers, status
 from rest_framework.response import Response
@@ -18,19 +17,100 @@ from .serializers import (
 )
 
 
+def is_super_admin(user):
+    """
+    Keep queryset visibility consistent with the IsSuperAdmin
+    permission. A user may be a Super Admin through the
+    application's Role system without Django is_superuser=True.
+    """
+    return user.is_superuser or user.has_role("Super Admin")
+
+
 class CommissionRateListCreateView(generics.ListCreateAPIView):
-    queryset = CommissionRate.objects.select_related("created_by")
+    """
+    Admin-only CRUD endpoint for CommissionRate configuration.
+    """
+
+    queryset = CommissionRate.objects.select_related(
+        "role",
+        "created_by",
+    )
     serializer_class = CommissionRateSerializer
     permission_classes = [IsSuperAdmin]
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        try:
+            serializer.save(
+                created_by=self.request.user,
+            )
+        except IntegrityError:
+            raise serializers.ValidationError(
+                {
+                    "detail": (
+                        "A commission rate with these values "
+                        "already exists or conflicts with another "
+                        "rate period for this role."
+                    )
+                }
+            )
 
 
 class CommissionRateDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = CommissionRate.objects.select_related("created_by")
+    """
+    Admin-only endpoint for viewing, updating, and deleting
+    CommissionRate records.
+    """
+
+    queryset = CommissionRate.objects.select_related(
+        "role",
+        "created_by",
+    )
     serializer_class = CommissionRateSerializer
     permission_classes = [IsSuperAdmin]
+
+    def update(self, request, *args, **kwargs):
+        rate = self.get_object()
+
+        # A rate becomes historical configuration once it has
+        # been used by a Commission. It must never be changed.
+        if rate.commissions.exists():
+            return Response(
+                {
+                    "detail": (
+                        "This commission rate has already been "
+                        "used and cannot be modified. Create a "
+                        "new commission rate for future payments."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return super().update(
+            request,
+            *args,
+            **kwargs,
+        )
+
+    def partial_update(self, request, *args, **kwargs):
+        rate = self.get_object()
+
+        if rate.commissions.exists():
+            return Response(
+                {
+                    "detail": (
+                        "This commission rate has already been "
+                        "used and cannot be modified. Create a "
+                        "new commission rate for future payments."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return super().partial_update(
+            request,
+            *args,
+            **kwargs,
+        )
 
     def destroy(self, request, *args, **kwargs):
         rate = self.get_object()
@@ -55,13 +135,26 @@ class CommissionRateDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class CommissionListCreateView(generics.ListCreateAPIView):
+    """
+    Commission endpoint.
+
+    GET:
+        Super Admin → all commissions
+        BD/Manager → own commissions
+
+    POST:
+        Super Admin only
+    """
+
     serializer_class = CommissionSerializer
 
     def get_permissions(self):
         if self.request.method == "GET":
             return [(IsSuperAdmin | IsBusinessDeveloper | IsTechnicalManager)()]
 
-        return [IsSuperAdmin()]
+        return [
+            IsSuperAdmin(),
+        ]
 
     def get_queryset(self):
         user = self.request.user
@@ -69,81 +162,58 @@ class CommissionListCreateView(generics.ListCreateAPIView):
         queryset = Commission.objects.select_related(
             "payment",
             "payment__project",
+            "payment__project__lead",
             "recipient",
             "commission_rate",
+            "commission_rate__role",
         )
 
-        if user.is_superuser:
+        if is_super_admin(user):
             return queryset
 
-        return queryset.filter(recipient=user)
+        return queryset.filter(
+            recipient=user,
+        )
 
+    @transaction.atomic
     def perform_create(self, serializer):
-        payment = serializer.validated_data["payment"]
-        recipient_role = serializer.validated_data["recipient_role"]
-
-        if payment.status != payment.Status.PAID:
-            raise serializers.ValidationError(
-                {"payment": ("Commission can only be created " "for a paid payment.")}
-            )
-
-        if payment.payment_date is None:
+        try:
+            serializer.save()
+        except IntegrityError:
             raise serializers.ValidationError(
                 {
-                    "payment": (
-                        "A paid payment must have a payment "
-                        "date before commission can be created."
+                    "detail": (
+                        "A commission already exists for this "
+                        "payment and recipient/rate combination."
                     )
                 }
             )
 
-        try:
-            commission_rate = CommissionRate.get_rate_for_role(
-                role=recipient_role,
-                effective_date=payment.payment_date,
-            )
-        except ValidationError as exc:
-            raise serializers.ValidationError(
-                {
-                    "recipient_role": str(exc),
-                }
-            )
-
-        project = payment.project
-
-        if recipient_role == Commission.RecipientRole.BD:
-            recipient = project.lead.created_by
-
-        elif recipient_role == Commission.RecipientRole.MANAGER:
-            recipient = project.manager
-
-        else:
-            raise serializers.ValidationError(
-                {"recipient_role": ("Invalid commission recipient role.")}
-            )
-
-        amount = (
-            payment.amount * commission_rate.percentage / Decimal("100")
-        ).quantize(
-            Decimal("0.01"),
-            rounding=ROUND_HALF_UP,
-        )
-
-        serializer.save(
-            recipient=recipient,
-            commission_rate=commission_rate,
-            amount=amount,
-        )
-
 
 class CommissionDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    Commission records are historical financial records.
+
+    GET:
+        Super Admin → any commission
+        BD/Manager → own commission
+
+    PUT/PATCH:
+        not allowed
+
+    DELETE:
+        not allowed
+    """
+
     serializer_class = CommissionSerializer
 
     def get_permissions(self):
         if self.request.method == "GET":
             return [(IsSuperAdmin | IsBusinessDeveloper | IsTechnicalManager)()]
 
-        return [IsSuperAdmin()]
+        return [
+            IsSuperAdmin(),
+        ]
 
     def get_queryset(self):
         user = self.request.user
@@ -151,41 +221,47 @@ class CommissionDetailView(generics.RetrieveUpdateDestroyAPIView):
         queryset = Commission.objects.select_related(
             "payment",
             "payment__project",
+            "payment__project__lead",
             "recipient",
             "commission_rate",
+            "commission_rate__role",
         )
 
-        if user.is_superuser:
+        if is_super_admin(user):
             return queryset
 
-        return queryset.filter(recipient=user)
+        return queryset.filter(
+            recipient=user,
+        )
 
     def update(self, request, *args, **kwargs):
-        commission = self.get_object()
+        self.get_object()
 
         return Response(
             {
                 "detail": (
-                    "Commission financial values cannot " "be modified after creation."
+                    "Commission records are historical "
+                    "financial records and cannot be modified."
                 )
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     def partial_update(self, request, *args, **kwargs):
-        commission = self.get_object()
+        self.get_object()
 
         return Response(
             {
                 "detail": (
-                    "Commission financial values cannot " "be modified after creation."
+                    "Commission records are historical "
+                    "financial records and cannot be modified."
                 )
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     def destroy(self, request, *args, **kwargs):
-        commission = self.get_object()
+        self.get_object()
 
         return Response(
             {"detail": ("Commission records cannot be deleted " "through the API.")},

@@ -2,25 +2,34 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.core.validators import MinValueValidator, MaxValueValidator
-from django.db import models
-from django.db.models import F, Q
+from django.core.validators import (
+    MinValueValidator,
+    MaxValueValidator,
+)
+from django.db import models, transaction
+from django.db.models import Q
 
-
-class CommissionRole(models.TextChoices):
-    BD = "BD", "Business Developer"
-    MANAGER = "MANAGER", "Manager"
+from users.models import Role
 
 
 class CommissionRate(models.Model):
     """
-    Stores the commission percentage for a role and the period
-    during which that percentage is effective.
+    Stores one version of a commission rate for a specific Role.
+
+    A new rate is created when the percentage changes.
+    Existing rates that have already been used by a Commission
+    cannot be modified.
     """
 
-    role = models.CharField(
-        max_length=20,
-        choices=CommissionRole.choices,
+    # These are business-role names from the existing Role table.
+    # The CommissionRate itself stores the Role through role_id.
+    BD_ROLE_NAME = "BD"
+    MANAGER_ROLE_NAME = "Technical Manager"
+
+    role = models.ForeignKey(
+        Role,
+        on_delete=models.PROTECT,
+        related_name="commission_rates",
     )
 
     percentage = models.DecimalField(
@@ -34,11 +43,6 @@ class CommissionRate(models.Model):
 
     effective_from = models.DateField()
 
-    effective_to = models.DateField(
-        null=True,
-        blank=True,
-    )
-
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -51,8 +55,6 @@ class CommissionRate(models.Model):
 
     class Meta:
         constraints = [
-            # A role cannot have two rate records starting
-            # on the same date.
             models.UniqueConstraint(
                 fields=[
                     "role",
@@ -60,100 +62,159 @@ class CommissionRate(models.Model):
                 ],
                 name="unique_commission_rate_start",
             ),
-            # effective_to must be the same date or after
-            # effective_from when it is provided.
             models.CheckConstraint(
-                condition=(
-                    Q(effective_to__isnull=True)
-                    | Q(effective_to__gte=F("effective_from"))
-                ),
-                name="valid_commission_rate_period",
-            ),
-            # Only one open-ended/current rate can exist
-            # for each role.
-            models.UniqueConstraint(
-                fields=["role"],
-                condition=Q(effective_to__isnull=True),
-                name="one_open_commission_rate_per_role",
+                condition=Q(percentage__gt=0),
+                name="commission_rate_percentage_positive",
             ),
         ]
 
+        ordering = [
+            "role_id",
+            "-effective_from",
+        ]
+
     def clean(self):
-        if self.effective_to is not None:
-            if self.effective_to < self.effective_from:
-                raise ValidationError(
-                    {
-                        "effective_to": (
-                            "Effective end date cannot be before "
-                            "the effective start date."
-                        )
-                    }
-                )
-
-        # Prevent overlapping rate periods for the same role.
-        overlapping_rates = CommissionRate.objects.filter(
-            role=self.role,
-        )
-
-        if self.pk:
-            overlapping_rates = overlapping_rates.exclude(
-                pk=self.pk,
-            )
-
-        overlapping_rates = overlapping_rates.filter(
-            effective_from__lte=(
-                self.effective_to if self.effective_to is not None else "9999-12-31"
-            ),
-        )
-
-        if self.effective_to is None:
-            overlapping_rates = overlapping_rates.filter(
-                Q(effective_to__isnull=True) | Q(effective_to__gte=self.effective_from)
-            )
-        else:
-            overlapping_rates = overlapping_rates.filter(
-                Q(effective_to__isnull=True) | Q(effective_to__gte=self.effective_from)
-            )
-
-        if overlapping_rates.exists():
+        if self.percentage <= 0:
             raise ValidationError(
                 {
-                    "effective_from": (
-                        "The effective period overlaps with "
-                        "another commission rate for this role."
+                    "percentage": (
+                        "Commission percentage must be "
+                        "greater than zero."
                     )
                 }
             )
+
+        if self.percentage > 100:
+            raise ValidationError(
+                {
+                    "percentage": (
+                        "Commission percentage cannot "
+                        "exceed 100."
+                    )
+                }
+            )
+
+        if self.role_id is None:
+            raise ValidationError(
+                {
+                    "role": "A valid role is required."
+                }
+            )
+
+        if self.created_by_id is None:
+            raise ValidationError(
+                {
+                    "created_by": (
+                        "The user creating the commission "
+                        "rate is required."
+                    )
+                }
+            )
+
+        # A used rate is historical and immutable.
+        if self.pk:
+            existing = CommissionRate.objects.get(
+                pk=self.pk,
+            )
+
+            is_used = Commission.objects.filter(
+                commission_rate_id=self.pk,
+            ).exists()
+
+            if is_used:
+                if existing.role_id != self.role_id:
+                    raise ValidationError(
+                        {
+                            "role": (
+                                "The role of a used commission "
+                                "rate cannot be changed."
+                            )
+                        }
+                    )
+
+                if existing.percentage != self.percentage:
+                    raise ValidationError(
+                        {
+                            "percentage": (
+                                "The percentage of a used "
+                                "commission rate cannot be changed."
+                            )
+                        }
+                    )
+
+                if (
+                    existing.effective_from
+                    != self.effective_from
+                ):
+                    raise ValidationError(
+                        {
+                            "effective_from": (
+                                "The effective date of a used "
+                                "commission rate cannot be changed."
+                            )
+                        }
+                    )
+
+                if (
+                    existing.created_by_id
+                    != self.created_by_id
+                ):
+                    raise ValidationError(
+                        {
+                            "created_by": (
+                                "The creator of a used commission "
+                                "rate cannot be changed."
+                            )
+                        }
+                    )
 
     def save(self, *args, **kwargs):
         self.full_clean()
         super().save(*args, **kwargs)
 
     @classmethod
-    def get_rate_for_role(cls, role, effective_date):
+    def get_required_role(cls, role_name):
+        try:
+            return Role.objects.get(name=role_name)
+        except Role.DoesNotExist:
+            raise ValidationError(
+                f"The required role '{role_name}' does not exist."
+            )
+
+    @classmethod
+    def get_rate_for_role(
+        cls,
+        role_id,
+        effective_date,
+    ):
+        """
+        Find the latest rate version for a Role that was
+        effective on the supplied date.
+        """
+
         rate = (
             cls.objects.filter(
-                role=role,
+                role_id=role_id,
                 effective_from__lte=effective_date,
             )
-            .filter(Q(effective_to__isnull=True) | Q(effective_to__gte=effective_date))
+            .select_related("role")
+            .order_by("-effective_from")
             .first()
         )
 
         if rate is None:
             raise ValidationError(
-                f"No commission rate is configured for " f"{role} on {effective_date}."
+                f"No commission rate is configured for "
+                f"role {role_id} on {effective_date}."
             )
 
         return rate
 
     def __str__(self):
-        end_date = self.effective_to if self.effective_to is not None else "Open-ended"
-
         return (
-            f"{self.get_role_display()} - "
+            f"{self.role.name} - "
             f"{self.percentage}% "
-            f"({self.effective_from} to {end_date})"
+            f"from {self.effective_from}"
         )
 
 
@@ -177,11 +238,6 @@ class Commission(models.Model):
         related_name="commissions",
     )
 
-    recipient_role = models.CharField(
-        max_length=20,
-        choices=CommissionRole.choices,
-    )
-
     amount = models.DecimalField(
         max_digits=12,
         decimal_places=2,
@@ -193,15 +249,14 @@ class Commission(models.Model):
 
     class Meta:
         constraints = [
-            # One commission per payment per recipient role.
             models.UniqueConstraint(
                 fields=[
                     "payment",
-                    "recipient_role",
+                    "commission_rate",
+                    "recipient",
                 ],
-                name="unique_payment_recipient_role",
+                name="unique_payment_rate_recipient",
             ),
-            # Commission amount must always be positive.
             models.CheckConstraint(
                 condition=Q(amount__gt=0),
                 name="commission_amount_positive",
@@ -210,18 +265,36 @@ class Commission(models.Model):
 
     def get_expected_recipient(self):
         project = self.payment.project
+        rate_role = self.commission_rate.role
 
-        if self.recipient_role == CommissionRole.BD:
+        bd_role = CommissionRate.get_required_role(
+            CommissionRate.BD_ROLE_NAME
+        )
+
+        manager_role = CommissionRate.get_required_role(
+            CommissionRate.MANAGER_ROLE_NAME
+        )
+
+        if rate_role.id == bd_role.id:
             return project.lead.created_by
 
-        if self.recipient_role == CommissionRole.MANAGER:
+        if rate_role.id == manager_role.id:
             return project.manager
 
-        raise ValidationError("Invalid commission recipient role.")
+        raise ValidationError(
+            {
+                "commission_rate": (
+                    "This role is not configured as a "
+                    "supported commission role."
+                )
+            }
+        )
 
     def calculate_amount(self):
         return (
-            self.payment.amount * self.commission_rate.percentage / Decimal("100")
+            self.payment.amount
+            * self.commission_rate.percentage
+            / Decimal("100")
         ).quantize(
             Decimal("0.01"),
             rounding=ROUND_HALF_UP,
@@ -229,79 +302,90 @@ class Commission(models.Model):
 
     def clean(self):
         if not self.payment_id:
-            raise ValidationError({"payment": "Payment is required."})
-
-        # Commission applies only when the payment is PAID.
-        if self.payment.status != self.payment.Status.PAID:
-            raise ValidationError(
-                {"payment": ("Commission can only be created " "for a paid payment.")}
-            )
-
-        if not self.commission_rate_id:
-            raise ValidationError({"commission_rate": ("Commission rate is required.")})
-
-        if not self.recipient_role:
-            raise ValidationError(
-                {"recipient_role": ("Commission recipient role is required.")}
-            )
-
-        # The selected CommissionRate must belong to
-        # the same role as the Commission.
-        if self.commission_rate.role != self.recipient_role:
             raise ValidationError(
                 {
-                    "commission_rate": (
-                        "The commission rate role must match "
-                        "the commission recipient role."
+                    "payment": "Payment is required."
+                }
+            )
+
+        if self.payment.status != self.payment.Status.PAID:
+            raise ValidationError(
+                {
+                    "payment": (
+                        "Commission can only be created "
+                        "for a paid payment."
                     )
                 }
             )
 
-        # The selected rate must have been effective on
-        # the payment date.
         if self.payment.payment_date is None:
             raise ValidationError(
                 {
                     "payment": (
-                        "A paid payment must have a payment date "
-                        "before commission can be created."
+                        "A paid payment must have a "
+                        "payment date."
                     )
                 }
             )
 
-        payment_date = self.payment.payment_date
-
-        if payment_date < self.commission_rate.effective_from:
+        if not self.commission_rate_id:
             raise ValidationError(
                 {
                     "commission_rate": (
-                        "The selected commission rate was not "
-                        "effective on the payment date."
+                        "Commission rate is required."
                     )
                 }
             )
 
-        if (
-            self.commission_rate.effective_to is not None
-            and payment_date > self.commission_rate.effective_to
-        ):
+        if not self.recipient_id:
             raise ValidationError(
                 {
-                    "commission_rate": (
-                        "The selected commission rate had "
-                        "expired before the payment date."
+                    "recipient": (
+                        "Commission recipient is required."
                     )
                 }
             )
 
         expected_recipient = self.get_expected_recipient()
 
+        # Recipient must match the business relationship
+        # represented by the selected Role.
         if self.recipient_id != expected_recipient.id:
             raise ValidationError(
                 {
                     "recipient": (
                         "The recipient does not match the "
-                        "project's commission recipient."
+                        "selected commission role for this project."
+                    )
+                }
+            )
+
+        # The recipient must actually have the selected Role.
+        if not self.recipient.user_roles.filter(
+            role_id=self.commission_rate.role_id,
+        ).exists():
+            raise ValidationError(
+                {
+                    "commission_rate": (
+                        "The recipient does not have the "
+                        "role associated with this rate."
+                    )
+                }
+            )
+
+        payment_date = self.payment.payment_date
+
+        # The rate must have started before the payment
+        # became eligible for commission.
+        if (
+            self.commission_rate.effective_from
+            > payment_date
+        ):
+            raise ValidationError(
+                {
+                    "commission_rate": (
+                        "The selected commission rate was not "
+                        "effective on the payment date."
                     )
                 }
             )
@@ -312,12 +396,13 @@ class Commission(models.Model):
             raise ValidationError(
                 {
                     "amount": (
-                        "The commission amount must match " "the system calculation."
+                        "The commission amount must match "
+                        "the system calculation."
                     )
                 }
             )
 
-        # Financial identity becomes immutable after creation.
+        # Commission becomes a historical financial record.
         if self.pk:
             existing = Commission.objects.get(
                 pk=self.pk,
@@ -325,10 +410,18 @@ class Commission(models.Model):
 
             if existing.payment_id != self.payment_id:
                 raise ValidationError(
-                    {"payment": ("The payment of a commission " "cannot be changed.")}
+                    {
+                        "payment": (
+                            "The payment of an existing "
+                            "commission cannot be changed."
+                        )
+                    }
                 )
 
-            if existing.commission_rate_id != self.commission_rate_id:
+            if (
+                existing.commission_rate_id
+                != self.commission_rate_id
+            ):
                 raise ValidationError(
                     {
                         "commission_rate": (
@@ -348,11 +441,11 @@ class Commission(models.Model):
                     }
                 )
 
-            if existing.recipient_role != self.recipient_role:
+            if existing.amount != self.amount:
                 raise ValidationError(
                     {
-                        "recipient_role": (
-                            "The recipient role of an existing "
+                        "amount": (
+                            "The amount of an existing "
                             "commission cannot be changed."
                         )
                     }
@@ -363,53 +456,121 @@ class Commission(models.Model):
         super().save(*args, **kwargs)
 
     @classmethod
+    @transaction.atomic
     def generate_for_payment(cls, payment):
         """
-        Generate the BD and Manager commissions for a PAID payment.
-        The applicable CommissionRate is selected using the payment date.
+        Generate the two business commissions for a PAID payment:
+
+        1. Business Developer → Lead.created_by
+        2. Technical Manager → Project.manager
+
+        The applicable CommissionRate is selected using
+        the Role ID and payment_date.
         """
 
         if payment.status != payment.Status.PAID:
             raise ValidationError(
-                "Commission can only be generated for a paid payment."
+                "Commission can only be generated "
+                "for a paid payment."
             )
 
         if payment.payment_date is None:
-            raise ValidationError("A paid payment must have a payment date.")
+            raise ValidationError(
+                "A paid payment must have a payment date."
+            )
 
-        project = payment.project
-        payment_date = payment.payment_date
+        project = (
+            payment.__class__.objects
+            .select_related(
+                "project",
+                "project__lead",
+                "project__lead__created_by",
+                "project__manager",
+            )
+            .get(
+                pk=payment.pk,
+            )
+        ).project
+
+        # Resolve the exact Role records from the central
+        # Role table. CommissionRate stores their IDs.
+        bd_role = CommissionRate.get_required_role(
+            CommissionRate.BD_ROLE_NAME
+        )
+
+        manager_role = CommissionRate.get_required_role(
+            CommissionRate.MANAGER_ROLE_NAME
+        )
+
+        bd_recipient = project.lead.created_by
+        manager_recipient = project.manager
+
+        # Verify the Lead creator is actually a BD.
+        if not bd_recipient.user_roles.filter(
+            role_id=bd_role.id,
+        ).exists():
+            raise ValidationError(
+                (
+                    f"{bd_recipient.username} must have the "
+                    "Business Developer role before commission "
+                    "can be generated."
+                )
+            )
+
+        # Verify the Project Manager has the expected role.
+        if not manager_recipient.user_roles.filter(
+            role_id=manager_role.id,
+        ).exists():
+            raise ValidationError(
+                (
+                    f"{manager_recipient.username} must have the "
+                    "Technical Manager role before commission "
+                    "can be generated."
+                )
+            )
 
         commission_data = [
             (
-                CommissionRole.BD,
-                project.lead.created_by,
+                bd_recipient,
+                bd_role.id,
             ),
             (
-                CommissionRole.MANAGER,
-                project.manager,
+                manager_recipient,
+                manager_role.id,
             ),
         ]
 
         commissions = []
 
-        for recipient_role, recipient in commission_data:
+        for recipient, role_id in commission_data:
             rate = CommissionRate.get_rate_for_role(
-                role=recipient_role,
-                effective_date=payment_date,
+                role_id=role_id,
+                effective_date=payment.payment_date,
             )
 
-            amount = (payment.amount * rate.percentage / Decimal("100")).quantize(
+            amount = (
+                payment.amount
+                * rate.percentage
+                / Decimal("100")
+            ).quantize(
                 Decimal("0.01"),
                 rounding=ROUND_HALF_UP,
             )
 
+            if amount <= 0:
+                raise ValidationError(
+                    (
+                        f"The calculated commission for "
+                        f"{recipient.username} must be greater "
+                        "than zero."
+                    )
+                )
+
             commission, created = cls.objects.get_or_create(
                 payment=payment,
-                recipient_role=recipient_role,
+                commission_rate=rate,
+                recipient=recipient,
                 defaults={
-                    "commission_rate": rate,
-                    "recipient": recipient,
                     "amount": amount,
                 },
             )
@@ -420,5 +581,7 @@ class Commission(models.Model):
 
     def __str__(self):
         return (
-            f"{self.recipient.username} - " f"{self.recipient_role} - " f"{self.amount}"
+            f"{self.recipient.username} - "
+            f"{self.commission_rate.role.name} - "
+            f"{self.amount}"
         )

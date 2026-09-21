@@ -6,7 +6,6 @@ from .views import (
     PaymentListCreateView,
 )
 
-
 urlpatterns = [
     path(
         "",
