@@ -1,19 +1,17 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenBlacklistSerializer
 from django.contrib.auth import authenticate
-from .models import User
-
-# In case User Forget it's password, we can use this serializer to reset the password using the token sent to the user's email.
 from django.contrib.auth.tokens import default_token_generator
-
 from django.contrib.auth.password_validation import validate_password
+
+from .models import Role, User, UserRole
 
 
 class RegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["username", "email", "password"]
+        fields = ["id", "username", "email", "password"]
         extra_kwargs = {"password": {"write_only": True}}
 
     def validate_username(self, value):
@@ -43,7 +41,8 @@ class LoginSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
 
     def validate(self, attrs):
-        # Implementing the authentication logic using Django's built-in authenticate function
+        # Implementing the authentication logic using Django's built-in
+        # authenticate function
         user = authenticate(
             request=self.context.get("request"),
             username=attrs["username"],
@@ -52,6 +51,7 @@ class LoginSerializer(serializers.Serializer):
 
         if user is None:
             raise serializers.ValidationError("Invalid username or password.")
+
         # If user is not active, raise a validation error
         if not user.is_active:
             raise serializers.ValidationError("This account is inactive.")
@@ -159,3 +159,33 @@ class ResetPasswordSerializer(serializers.Serializer):
         user.save()
 
         return user
+
+
+class RoleSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = Role
+        fields = [
+            "id",
+            "name",
+            "description",
+        ]
+
+
+class UserRoleSerializer(serializers.ModelSerializer):
+    assigned_by = serializers.ReadOnlyField(source="assigned_by.username")
+
+    class Meta:
+        model = UserRole
+        fields = [
+            "id",
+            "user",
+            "role",
+            "assigned_by",
+            "assigned_at",
+        ]
+        read_only_fields = [
+            "id",
+            "assigned_by",
+            "assigned_at",
+        ]

@@ -1,7 +1,7 @@
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
-from django.core.exceptions import ValidationError
 
 
 class Lead(models.Model):
@@ -17,6 +17,7 @@ class Lead(models.Model):
     client_address = models.TextField(blank=True)
     client_email = models.EmailField(blank=True)
     client_contact = models.CharField(max_length=50, blank=True)
+
     platform = models.CharField(max_length=100)
 
     status = models.CharField(
@@ -103,14 +104,25 @@ class Phase(models.Model):
         self.save(update_fields=["status", "completed_at"])
 
     def assign_engineer(self, engineer, manager):
-        assignment = self.assignments.filter(manager=manager).first()
+        # The selected user must be an Engineer.
+        if not engineer.has_role("Engineer"):
+            raise ValidationError("The selected user must have the Engineer role.")
 
-        if not assignment:
-            raise ValueError("This manager is not assigned to this phase.")
+        # Find the manager assignment that was accepted for this phase.
+        accepted_assignment = self.assignments.filter(
+            status=PhaseAssignment.Status.ACCEPTED,
+        ).first()
 
-        if not assignment.is_accepted():
-            raise ValueError(
-                "The manager must accept the phase before assigning engineers."
+        if not accepted_assignment:
+            raise ValidationError(
+                "The phase must be accepted by a manager before assigning an engineer."
+            )
+
+        # A Technical Manager can assign engineers only to phases
+        # that they personally accepted.
+        if not manager.is_superuser and accepted_assignment.manager != manager:
+            raise ValidationError(
+                "Only the manager who accepted the phase can assign an engineer."
             )
 
         return PhaseEngineer.objects.create(
@@ -118,9 +130,8 @@ class Phase(models.Model):
             engineer=engineer,
             assigned_by=manager,
         )
-        
-        
-        
+
+
 class PhaseAssignment(models.Model):
 
     class Status(models.TextChoices):
@@ -155,10 +166,6 @@ class PhaseAssignment(models.Model):
         blank=True,
     )
 
-    # NEW: Allows assignment history, but only one PENDING or ACCEPTED
-    # manager assignment can exist for a phase at a time.
-    # If one manager assignment is REJECTED, another manager can be assigned to the same phase
-    # Can't request another manager assignment if one is already PENDING or ACCEPTED for the same phase.
     class Meta:
         constraints = [
             models.UniqueConstraint(
@@ -177,13 +184,31 @@ class PhaseAssignment(models.Model):
         return f"{self.phase} - {self.manager.username}"
 
     def accept(self):
+        if self.status != self.Status.PENDING:
+            raise ValidationError(
+                "You cannot change the decision after the assignment "
+                "has been accepted or rejected."
+            )
+
         self.status = self.Status.ACCEPTED
         self.responded_at = timezone.now()
-        self.save(update_fields=["status", "responded_at"])
+
+        self.save(
+            update_fields=[
+                "status",
+                "responded_at",
+            ]
+        )
 
     def reject(self, comment):
+        if self.status != self.Status.PENDING:
+            raise ValidationError(
+                "You cannot change the decision after the assignment "
+                "has been accepted or rejected."
+            )
+
         if not comment:
-            raise ValueError("Rejection comment is required.")
+            raise ValidationError("Rejection comment is required.")
 
         self.status = self.Status.REJECTED
         self.rejection_comment = comment
@@ -197,11 +222,8 @@ class PhaseAssignment(models.Model):
             ]
         )
 
-    # If Manager has accepted the assignment, this method will return True, otherwise False.
     def is_accepted(self):
         return self.status == self.Status.ACCEPTED
-
-
 
 
 class PhaseEngineer(models.Model):
