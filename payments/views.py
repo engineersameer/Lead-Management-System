@@ -1,28 +1,29 @@
-"""**Payment validations and business rules:**
+"""
+Payment validations and business rules:
 
-* Only **Super Admin** can manage Payment records.
-* The selected **Project must exist**.
-* Payments can only be created for an **Active Project**.
-* Payment amount must be **greater than zero**.
-* `payment_month` must represent a valid month by using the **first day of the month**.
-* Only **one Payment can exist for the same Project and payment month**.
-* A newly created Payment starts with **PENDING** status.
-* Payment status cannot be directly changed through normal PUT/PATCH requests.
-* A `PENDING` Payment can be marked as **PAID** or **FAILED** through dedicated actions.
-* A `FAILED` Payment can be marked as **PAID**.
-* A `FAILED` Payment cannot be marked as **FAILED** again.
-* A `PAID` Payment cannot be marked as **PAID** again.
-* A `PAID` Payment cannot be marked as **FAILED**.
-* A `PAID` Payment cannot be modified through normal PUT/PATCH.
-* A `PAID` Payment cannot be deleted.
-* A `PAID` Payment requires a **payment date**.
-* A `PENDING` Payment cannot have a payment date.
-* Payments cannot be added to a **Completed Project**.
-* Payment deletion returns a custom success message after successful deletion.
+- Only Super Admin can manage Payment records.
+- The selected Project must exist.
+- Payments can only be created for an Active Project.
+- Payment amount must be greater than zero.
+- payment_month must use the first day of the month.
+- Only one Payment can exist for the same Project and payment month.
+- A newly created Payment starts with PENDING status.
+- Payment status cannot be directly changed through normal PUT/PATCH.
+- A PENDING Payment can be changed to PAID or FAILED.
+- A FAILED Payment can be changed to PAID.
+- A FAILED Payment cannot be changed to FAILED again.
+- A PAID Payment cannot be changed to PAID again.
+- A PAID Payment cannot be changed to FAILED.
+- A PAID Payment cannot be modified through normal PUT/PATCH.
+- A PAID Payment cannot be deleted.
+- A PAID Payment requires a payment date.
+- A PENDING Payment cannot have a payment date.
+- Payments cannot be added to a Completed Project.
+- Payment deletion returns a custom success message.
 """
 
 from django.core.exceptions import ValidationError
-from django.shortcuts import get_object_or_404
+from django.db.models import ProtectedError
 
 from rest_framework import generics, status
 from rest_framework.response import Response
@@ -59,7 +60,11 @@ class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return super().update(request, *args, **kwargs)
+        return super().update(
+            request,
+            *args,
+            **kwargs,
+        )
 
     def destroy(self, request, *args, **kwargs):
         payment = self.get_object()
@@ -70,10 +75,21 @@ class PaymentDetailView(generics.RetrieveUpdateDestroyAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        self.perform_destroy(payment)
+        try:
+            self.perform_destroy(payment)
+        except ProtectedError:
+            return Response(
+                {
+                    "detail": (
+                        "This payment cannot be deleted because "
+                        "it is referenced by another record."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response(
-            {"message": "Payment deleted successfully."},
+            {"message": ("Payment deleted successfully.")},
             status=status.HTTP_200_OK,
         )
 
@@ -84,13 +100,14 @@ class PaymentChangeStatusView(generics.GenericAPIView):
     permission_classes = [IsSuperAdmin]
 
     def post(self, request, pk):
-        payment = get_object_or_404(
-            Payment,
-            pk=pk,
-        )
+        payment = self.get_object()
 
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        serializer = self.get_serializer(
+            data=request.data,
+        )
+        serializer.is_valid(
+            raise_exception=True,
+        )
 
         try:
             payment.change_status(
@@ -99,7 +116,13 @@ class PaymentChangeStatusView(generics.GenericAPIView):
             )
         except ValidationError as exc:
             return Response(
-                {"detail": str(exc)},
+                {
+                    "detail": (
+                        exc.message_dict
+                        if hasattr(exc, "message_dict")
+                        else exc.messages
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
