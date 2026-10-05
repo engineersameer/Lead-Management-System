@@ -2,7 +2,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 
-
+'''Models for the comments app.'''
 class Comment(models.Model):
     lead = models.ForeignKey(
         "leads.Lead",
@@ -110,3 +110,6 @@ class CommentImage(models.Model):
 
     def __str__(self):
         return f"Image for comment {self.comment_id}"
+
+
+
